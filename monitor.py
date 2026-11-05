@@ -110,7 +110,15 @@ def login(page):
             btn.click()
         else:
             pwd.press("Enter")
-        page.wait_for_load_state("networkidle")
+        # вход идёт асинхронно: ждём, пока форма исчезнет (или появится ошибка)
+        try:
+            page.wait_for_selector("input[type=password]", state="hidden", timeout=20000)
+        except Exception:
+            pass
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
         if DEBUG:
             dump_page(page, "после отправки формы входа")
         if page.locator("input[type=password]:visible").count() > 0:
@@ -125,7 +133,9 @@ JS_DUMP = """() => {
   const vis = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
   const items = [...document.querySelectorAll('button, a, input, select')].filter(vis).slice(0, 40)
     .map(e => e.tagName.toLowerCase() + (e.type ? '[' + e.type + ']' : '') + ':' +
-      (e.innerText || e.value || e.name || e.placeholder || '').trim().slice(0, 40));
+      (e.tagName === 'INPUT' && !['submit', 'button', 'checkbox', 'radio'].includes(e.type)
+        ? (e.placeholder || e.name || '')   // значения полей никогда не печатаем
+        : (e.innerText || e.value || e.name || e.placeholder || '')).trim().slice(0, 40));
   return {title: document.title, text: document.body.innerText.replace(/\\s+/g, ' ').slice(0, 700), items};
 }"""
 
@@ -368,7 +378,7 @@ def run():
             DEBUG_DIR.mkdir(exist_ok=True)
 
             def on_resp(r):
-                if r.request.resource_type in ("xhr", "fetch"):
+                if r.request.resource_type in ("xhr", "fetch") or r.request.method == "POST":
                     path = urllib.parse.urlparse(r.url).path
                     log(f"   net: {r.request.method} {path} -> {r.status}")
 
