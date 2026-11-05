@@ -316,6 +316,10 @@ def scan(page, state_prev):
                 ds = set_date(page, d)
                 res = show_schedule(page, ds)
                 slots = parse_slots(res)
+                api = (res.get("api") or "").strip()
+                if not slots and api not in ("", "[]", "{}", "null"):
+                    # сервер вернул данные, но разобрать таблицу не вышло: лучше лишний раз сообщить
+                    slots = ["окно есть (формат не распознан, откройте сайт)"]
                 if DEBUG:
                     log(f"[{title}] {ds}: {slots}")
                     global API_LOGGED
