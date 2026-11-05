@@ -3,6 +3,9 @@ name: monitor
 on:
   schedule:
     - cron: "11,41 * * * *"   # каждые 30 минут (время UTC, GitHub может задерживать запуск)
+  push:
+    paths:
+      - trigger.txt   # запуск через коммит: в файле слово test или debug
   workflow_dispatch:
     inputs:
       debug:
@@ -38,6 +41,10 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
+      - name: Read trigger mode
+        run: |
+          if [ -f trigger.txt ]; then echo "MODE=$(tr -d ' \r\n' < trigger.txt)" >> "$GITHUB_ENV"; fi
+
       - name: Run monitor
         env:
           SITE_EMAIL: ${{ secrets.SITE_EMAIL }}
@@ -45,8 +52,8 @@ jobs:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           DAYS_AHEAD: "14"
-          DEBUG: ${{ inputs.debug && '1' || '0' }}
-          TEST: ${{ inputs.test && '1' || '0' }}
+          DEBUG: ${{ (inputs.debug || (github.event_name == 'push' && env.MODE == 'debug')) && '1' || '0' }}
+          TEST: ${{ (inputs.test || (github.event_name == 'push' && env.MODE == 'test')) && '1' || '0' }}
         run: python monitor.py
 
       - name: Upload debug files

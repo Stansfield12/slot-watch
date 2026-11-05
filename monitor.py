@@ -43,8 +43,12 @@ WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 TIME_RE = re.compile(r"(\d{1,2}:\d{2})\s*[-–—]\s*(\d{1,2}:\d{2})")
 
 
+LOGBUF = []
+
+
 def log(*a):
     print(*a, flush=True)
+    LOGBUF.append(" ".join(str(x) for x in a))
 
 
 def tg_send(text):
@@ -284,6 +288,22 @@ def format_message(new_items):
 
 
 def main():
+    """Запускает проверку; в режиме DEBUG присылает весь лог в Telegram (в ваш личный чат с ботом)."""
+    code = 1
+    try:
+        code = run()
+    finally:
+        if DEBUG and TG_TOKEN and TG_CHAT:
+            text = "\n".join(LOGBUF) or "(лог пуст)"
+            try:
+                for i in range(0, len(text), 3800):
+                    tg_send("🛠 debug-лог:\n" + text[i:i + 3800])
+            except Exception as e:  # noqa: BLE001
+                print(f"Не удалось отправить debug-лог: {e}", flush=True)
+    return code
+
+
+def run():
     if TEST:
         tg_send("✅ Тест: бот мониторинга окон на связи.")
         log("Тестовое сообщение отправлено")
