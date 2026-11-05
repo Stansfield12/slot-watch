@@ -45,6 +45,7 @@ TIME_RE = re.compile(r"(\d{1,2}:\d{2})\s*[-–—]\s*(\d{1,2}:\d{2})")
 
 
 LOGBUF = []
+API_LOGGED = 0
 
 
 def log(*a):
@@ -93,8 +94,6 @@ def login(page):
     # Форма входа находится на главной странице сайта, а не на странице записи
     page.goto(ROOT, wait_until="domcontentloaded")
     page.wait_for_load_state("networkidle")
-    if DEBUG:
-        dump_page(page, "главная страница")
     pwd = page.locator("input[type=password]:visible").first
     if pwd.count() > 0:
         form = pwd.locator("xpath=ancestor::form[1]")
@@ -119,8 +118,6 @@ def login(page):
             page.wait_for_load_state("networkidle", timeout=15000)
         except Exception:
             pass
-        if DEBUG:
-            dump_page(page, "после отправки формы входа")
         if page.locator("input[type=password]:visible").count() > 0:
             raise RuntimeError("Не удалось войти: проверьте email/пароль (или на сайте появилась капча)")
     page.goto(BASE, wait_until="domcontentloaded")
@@ -218,20 +215,22 @@ JS_SET_DATE = """(s) => {
 }"""
 
 JS_READ_RESULTS = """() => {
-  const h = [...document.querySelectorAll('th,div,span,td')].find(
-    e => e.children.length === 0 && e.textContent.trim() === 'УРОКИ');
-  let n = h || document.body;
-  if (h) {
-    for (let i = 0; i < 6 && n.parentElement; i++) {
-      n = n.parentElement;
-      if (n.tagName === 'TABLE' || (n.innerText.includes('ЧАС') && n.innerText.length > 40)) break;
-    }
+  // Заголовок таблицы результатов («Час / Уроки») в вёрстке приходит в обычном регистре,
+  // а капсом он только из-за CSS, поэтому сравниваем без учёта регистра.
+  const norm = s => s.replace(/\\s+/g, ' ').trim().toUpperCase();
+  const h = [...document.querySelectorAll('th,td,div,span,p,h3,h4')].find(
+    e => e.children.length === 0 && norm(e.textContent) === 'УРОКИ');
+  if (!h) return {found: false, text: '', rows: []};
+  let n = h;
+  for (let i = 0; i < 6 && n.parentElement; i++) {
+    n = n.parentElement;
+    if (n.tagName === 'TABLE' || (n.innerText.toUpperCase().includes('ЧАС') && n.innerText.length > 40)) break;
   }
   const rows = [...n.querySelectorAll('tr')].map(tr => ({
     t: tr.innerText.replace(/\\s+/g, ' ').trim(),
     i: !!tr.querySelector('button, a, input[type=checkbox], input[type=radio]'),
   }));
-  return {text: n.innerText, rows};
+  return {found: true, text: n.innerText, rows};
 }"""
 
 
@@ -248,7 +247,16 @@ def show_schedule(page, date_str):
     btn = page.get_by_role("button", name=re.compile("Відобразити розклад")).first
     if btn.count() == 0:
         btn = page.get_by_text("Відобразити розклад").first
-    btn.click()
+    clicked = False
+    api = ""
+    try:
+        with page.expect_response(lambda r: "GetLessons" in r.url, timeout=15000) as ri:
+            btn.click()
+            clicked = True
+        api = ri.value.text()
+    except Exception:
+        if not clicked:
+            raise
     try:
         page.wait_for_load_state("networkidle", timeout=15000)
     except Exception:
@@ -258,13 +266,17 @@ def show_schedule(page, date_str):
     res = page.evaluate(JS_READ_RESULTS)
     while time.time() < deadline:
         res = page.evaluate(JS_READ_RESULTS)
-        if res["text"] != before and "Оберіть дату" not in res["text"]:
+        if res["found"] and res["text"] != before and "Оберіть дату" not in res["text"]:
             break
         time.sleep(0.4)
+    res["api"] = api
     return res
 
 
 def parse_slots(res):
+    if not res.get("found"):
+        # лучше громко упасть, чем принять за окна что-то постороннее на странице
+        raise RuntimeError("не нашёл таблицу расписания («Час / Уроки») на странице")
     text = res["text"]
     if "відсутні" in text.lower() and not TIME_RE.search(text):
         return []
@@ -306,8 +318,11 @@ def scan(page, state_prev):
                 slots = parse_slots(res)
                 if DEBUG:
                     log(f"[{title}] {ds}: {slots}")
-                    if slots or d == today:
-                        log("   текст:", res["text"][:300].replace("\n", " / "))
+                    global API_LOGGED
+                    if (slots or d == today) and API_LOGGED < 4:
+                        API_LOGGED += 1
+                        log("   таблица:", res["text"][:200].replace("\n", " / "))
+                        log("   ответ GetLessons:", (res.get("api") or "")[:700])
                 for s in slots:
                     found[f"{needle}|{d.isoformat()}|{s}"] = (title, d, s)
                 time.sleep(0.6)
@@ -385,8 +400,6 @@ def run():
             page.on("response", on_resp)
         try:
             login(page)
-            if DEBUG:
-                dump_page(page, "после входа")
             open_booking_form(page)
             if DEBUG:
                 page.screenshot(path=str(DEBUG_DIR / "form.png"), full_page=True)
