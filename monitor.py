@@ -105,9 +105,35 @@ def login(page):
         page.goto(BASE, wait_until="networkidle")
 
 
+JS_DUMP = """() => {
+  const vis = e => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+  const items = [...document.querySelectorAll('button, a, input, select')].filter(vis).slice(0, 40)
+    .map(e => e.tagName.toLowerCase() + (e.type ? '[' + e.type + ']' : '') + ':' +
+      (e.innerText || e.value || e.name || e.placeholder || '').trim().slice(0, 40));
+  return {title: document.title, text: document.body.innerText.replace(/\\s+/g, ' ').slice(0, 700), items};
+}"""
+
+
+def dump_page(page, label):
+    """Для отладки: что сейчас на странице (адрес, заголовок, текст, кнопки)."""
+    try:
+        info = page.evaluate(JS_DUMP)
+        log(f"--- {label} ---")
+        log("url:", urllib.parse.urlparse(page.url).path)
+        log("title:", info["title"])
+        log("text:", info["text"])
+        log("elements:", " | ".join(info["items"]))
+    except Exception as e:  # noqa: BLE001
+        log("dump_page не удалось:", e)
+
+
 def open_booking_form(page):
     if page.locator("select").count() >= 2:
         return
+    try:
+        page.get_by_text("Забронювати", exact=False).first.wait_for(timeout=20000)
+    except Exception:
+        pass
     btn = page.get_by_role("button", name=re.compile("Забронювати")).first
     if btn.count() == 0:
         btn = page.get_by_text("Забронювати", exact=False).first
@@ -333,6 +359,8 @@ def run():
             page.on("response", on_resp)
         try:
             login(page)
+            if DEBUG:
+                dump_page(page, "после входа")
             open_booking_form(page)
             if DEBUG:
                 page.screenshot(path=str(DEBUG_DIR / "form.png"), full_page=True)
@@ -341,6 +369,7 @@ def run():
         except Exception as e:  # noqa: BLE001
             log(f"ФАТАЛЬНАЯ ОШИБКА: {e}")
             if DEBUG:
+                dump_page(page, "страница при ошибке")
                 page.screenshot(path=str(DEBUG_DIR / "fatal.png"), full_page=True)
                 (DEBUG_DIR / "fatal.html").write_text(page.content(), "utf-8")
             last = state.get("last_error_notify", "")
