@@ -441,6 +441,28 @@ def run():
         log("Уведомление отправлено")
 
     state["slots"] = sorted(cur_keys)
+
+    # раз в сутки (первый запуск после 9:00 по Киеву) сообщаем, что мониторинг жив.
+    # Если такого сообщения нет, значит, что-то сломалось или расписание отключилось.
+    today_iso = now.date().isoformat()
+    if now.hour >= 9 and state.get("last_daily") != today_iso:
+        names = [t for n, t in ADDRESSES if n not in failed]
+        if failed:
+            bad = [t for n, t in ADDRESSES if n in failed]
+            tail = "⚠️ Не удалось проверить: " + "; ".join(bad)
+        elif found:
+            tail = f"Сейчас на сайте есть окна: {len(found)} шт."
+        else:
+            tail = "Свободных окон пока нет."
+        try:
+            tg_send(
+                f"✅ Мониторинг работает ({now:%d.%m %H:%M}). "
+                f"Проверено адресов: {len(names)} из {len(ADDRESSES)}, дней вперёд: {DAYS_AHEAD}.\n{tail}"
+            )
+            state["last_daily"] = today_iso
+        except Exception as e:  # noqa: BLE001
+            log(f"Не удалось отправить ежедневное сообщение: {e}")
+
     # раз в ~10 дней обновляем отметку, чтобы в репозитории был коммит (иначе cron отключится через 60 дней)
     hb = state.get("heartbeat", "")
     today_s = now.date().isoformat()
