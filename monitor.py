@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from playwright.sync_api import sync_playwright
 
+ROOT = "https://practice.avtoshkolaantares.ua/"
 BASE = "https://practice.avtoshkolaantares.ua/StudBooking/StudBookingView"
 TZ = ZoneInfo("Europe/Kyiv")
 
@@ -82,27 +83,42 @@ def save_state(state):
 
 # ---------- работа со страницей ----------
 
+def not_logged_in(page):
+    """Незалогиненного сайт кидает на /Auth/Login (GET там даёт 405)."""
+    path = urllib.parse.urlparse(page.url).path.lower()
+    return "/auth/login" in path or "405" in (page.title() or "")
+
+
 def login(page):
+    # Форма входа находится на главной странице сайта, а не на странице записи
+    page.goto(ROOT, wait_until="domcontentloaded")
+    page.wait_for_load_state("networkidle")
+    if DEBUG:
+        dump_page(page, "главная страница")
+    pwd = page.locator("input[type=password]:visible").first
+    if pwd.count() > 0:
+        form = pwd.locator("xpath=ancestor::form[1]")
+        scope = form if form.count() else page
+        user = scope.locator(
+            "input[type=email], input[name*=mail i], input[name*=login i], "
+            "input[name*=user i], input[type=text], input:not([type])"
+        ).first
+        user.fill(EMAIL)
+        pwd.fill(PASSWORD)
+        btn = scope.locator("button[type=submit], input[type=submit], button:not([type])").first
+        if btn.count():
+            btn.click()
+        else:
+            pwd.press("Enter")
+        page.wait_for_load_state("networkidle")
+        if DEBUG:
+            dump_page(page, "после отправки формы входа")
+        if page.locator("input[type=password]:visible").count() > 0:
+            raise RuntimeError("Не удалось войти: проверьте email/пароль (или на сайте появилась капча)")
     page.goto(BASE, wait_until="domcontentloaded")
     page.wait_for_load_state("networkidle")
-    if page.locator("input[type=password]").count() == 0:
-        return  # уже внутри
-    user = page.locator(
-        "input[type=email], input[name*=mail i], input[name*=login i], "
-        "input[name*=user i], input[type=text]"
-    ).first
-    user.fill(EMAIL)
-    page.locator("input[type=password]").first.fill(PASSWORD)
-    btn = page.locator("button[type=submit], input[type=submit]").first
-    if btn.count():
-        btn.click()
-    else:
-        page.keyboard.press("Enter")
-    page.wait_for_load_state("networkidle")
-    if page.locator("input[type=password]").count() > 0:
-        raise RuntimeError("Не удалось войти: проверьте email/пароль (или на сайте появилась капча)")
-    if "StudBookingView" not in page.url:
-        page.goto(BASE, wait_until="networkidle")
+    if not_logged_in(page):
+        raise RuntimeError("Вход не выполнен: сайт возвращает на страницу входа")
 
 
 JS_DUMP = """() => {
