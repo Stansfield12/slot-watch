@@ -1,15 +1,23 @@
 name: monitor
 
+# Как это работает:
+# Один запуск проверяет сайт каждые 30 минут примерно 5,5 часа, а в конце сам запускает
+# следующий. Так цепочка идёт круглосуточно и не зависит от расписания GitHub
+# (оно для этого репозитория не срабатывает). Расписание оставлено как запасной
+# способ перезапустить цепочку, если она оборвётся.
+# Цепочка включается только в ПУБЛИЧНОМ репозитории: в приватном она за пару дней
+# съела бы все бесплатные минуты, поэтому там выполняется одна проверка за запуск.
+
 on:
   schedule:
-    - cron: "11,41 * * * *"   # каждые 30 минут (время UTC, GitHub может задерживать запуск)
+    - cron: "11,41 * * * *"
   push:
     paths:
-      - trigger.txt   # запуск через коммит: в файле слово test или debug
+      - trigger.txt   # запуск через коммит: в файле run, test или debug
   workflow_dispatch:
     inputs:
       debug:
-        description: "Режим отладки (подробные логи, скриншоты). Только для ПРИВАТНОГО репозитория!"
+        description: "Режим отладки (подробный лог в Telegram)"
         type: boolean
         default: false
       test:
@@ -19,7 +27,9 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
+# одновременно работает только одна цепочка, лишние запуски отменяются сами
 concurrency:
   group: monitor
   cancel-in-progress: false
@@ -27,7 +37,7 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
@@ -41,9 +51,22 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
-      - name: Read trigger mode
+      - name: Decide mode
         run: |
-          if [ -f trigger.txt ]; then echo "MODE=$(tr -d ' \r\n' < trigger.txt)" >> "$GITHUB_ENV"; fi
+          MODE=""
+          if [ "${{ github.event_name }}" = "push" ] && [ -f trigger.txt ]; then
+            MODE=$(tr -d ' \r\n' < trigger.txt)
+          fi
+          DEBUG=0; TEST=0; LOOP=0
+          if [ "${{ inputs.debug }}" = "true" ] || [ "$MODE" = "debug" ]; then DEBUG=1; fi
+          if [ "${{ inputs.test }}" = "true" ] || [ "$MODE" = "test" ]; then TEST=1; fi
+          if [ "$DEBUG" = 0 ] && [ "$TEST" = 0 ] && [ "${{ github.event.repository.private }}" = "false" ]; then
+            LOOP=1
+          fi
+          echo "DEBUG=$DEBUG" >> "$GITHUB_ENV"
+          echo "TEST=$TEST" >> "$GITHUB_ENV"
+          echo "LOOP=$LOOP" >> "$GITHUB_ENV"
+          echo "debug=$DEBUG test=$TEST loop=$LOOP private=${{ github.event.repository.private }}"
 
       - name: Run monitor
         env:
@@ -52,22 +75,42 @@ jobs:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           DAYS_AHEAD: "14"
-          DEBUG: ${{ (inputs.debug || (github.event_name == 'push' && env.MODE == 'debug')) && '1' || '0' }}
-          TEST: ${{ (inputs.test || (github.event_name == 'push' && env.MODE == 'test')) && '1' || '0' }}
-        run: python monitor.py
-
-      - name: Upload debug files
-        if: ${{ always() && inputs.debug }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug
-          path: debug/
-          if-no-files-found: ignore
+        run: |
+          git config user.name "slot-watch-bot"
+          git config user.email "slot-watch-bot@users.noreply.github.com"
+          save_state() {
+            git add state.json
+            if ! git diff --cached --quiet; then
+              git commit -q -m "update state"
+              (git pull -q --rebase origin main && git push -q) || echo "не удалось сохранить state.json"
+            fi
+          }
+          if [ "$LOOP" = "1" ]; then
+            END=$((SECONDS + 320 * 60))
+            while true; do
+              START=$SECONDS
+              echo "=== проверка $(TZ=Europe/Kyiv date '+%d.%m %H:%M') ==="
+              python monitor.py || echo "проверка завершилась с ошибкой"
+              save_state
+              NEXT=$((START + 1800))
+              if [ "$NEXT" -ge "$END" ]; then break; fi
+              WAIT=$((NEXT - SECONDS))
+              if [ "$WAIT" -gt 0 ]; then sleep "$WAIT"; fi
+            done
+          else
+            python monitor.py
+          fi
 
       - name: Save state
-        if: ${{ always() }}
+        if: ${{ always() && env.LOOP != '1' }}
         run: |
           git config user.name "slot-watch-bot"
           git config user.email "slot-watch-bot@users.noreply.github.com"
           git add state.json
-          git diff --cached --quiet || (git commit -m "update state" && git push)
+          git diff --cached --quiet || (git commit -m "update state" && git pull -q --rebase origin main && git push)
+
+      - name: Continue chain
+        if: ${{ always() && env.LOOP == '1' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run monitor.yml --ref main -R "${{ github.repository }}"
