@@ -392,7 +392,7 @@ def run():
         ctx = browser.new_context(locale="uk-UA", timezone_id="Europe/Kyiv",
                                   viewport={"width": 430, "height": 900})
         page = ctx.new_page()
-        page.set_default_timeout(15000)
+        page.set_default_timeout(30000)
         if DEBUG:
             DEBUG_DIR.mkdir(exist_ok=True)
 
@@ -403,7 +403,16 @@ def run():
 
             page.on("response", on_resp)
         try:
-            login(page)
+            # сайт иногда подвисает: пробуем войти до 3 раз с паузой
+            for attempt in range(3):
+                try:
+                    login(page)
+                    break
+                except Exception as e_login:  # noqa: BLE001
+                    if attempt == 2 or "Не удалось войти" in str(e_login):
+                        raise
+                    log(f"Вход не удался (попытка {attempt + 1}), повтор через 30 с: {e_login}")
+                    time.sleep(30)
             open_booking_form(page)
             if DEBUG:
                 page.screenshot(path=str(DEBUG_DIR / "form.png"), full_page=True)
@@ -415,17 +424,36 @@ def run():
                 dump_page(page, "страница при ошибке")
                 page.screenshot(path=str(DEBUG_DIR / "fatal.png"), full_page=True)
                 (DEBUG_DIR / "fatal.html").write_text(page.content(), "utf-8")
+            # Разовые сбои (сайт подвис, нет света у них) не повод будить человека.
+            # Сообщаем, только если сбой держится 3 проверки подряд (~1,5 часа).
+            streak = int(state.get("fail_streak", 0)) + 1
+            state["fail_streak"] = streak
             last = state.get("last_error_notify", "")
-            if not last or (now - dt.datetime.fromisoformat(last)).total_seconds() > 12 * 3600:
+            recent = last and (now - dt.datetime.fromisoformat(last)).total_seconds() < 12 * 3600
+            if streak >= 3 and not recent:
                 try:
-                    tg_send(f"⚠️ Мониторинг окон сломался: {e}")
+                    short = str(e).splitlines()[0][:200]
+                    tg_send(
+                        "⚠️ Сайт автошколы не удаётся проверить уже ~1,5 часа "
+                        f"({streak} проверки подряд). Бот продолжает пробовать.\nОшибка: {short}"
+                    )
                     state["last_error_notify"] = now.isoformat(timespec="seconds")
-                    save_state(state)
+                    state["fail_alerted"] = True
                 except Exception as e2:  # noqa: BLE001
                     log(f"Не удалось отправить в Telegram: {e2}")
+            save_state(state)
             browser.close()
             return 1
         browser.close()
+
+    # проверка прошла: сбрасываем счётчик сбоев и сообщаем, если до этого тревожили
+    if state.get("fail_alerted"):
+        try:
+            tg_send("✅ Сайт автошколы снова доступен, мониторинг работает.")
+        except Exception as e3:  # noqa: BLE001
+            log(f"Не удалось отправить в Telegram: {e3}")
+    state["fail_streak"] = 0
+    state["fail_alerted"] = False
 
     # состояние: новые = то, чего не было в прошлый раз
     cur_keys = set(found)
