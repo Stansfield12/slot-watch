@@ -1,6 +1,6 @@
 {
- "fail_alerted": true,
- "fail_streak": 4,
+ "fail_alerted": false,
+ "fail_streak": 0,
  "heartbeat": "2026-11-15",
  "last_daily": "2026-11-16",
  "last_error_notify": "2026-11-17T00:28:22+02:00",
